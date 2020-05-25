@@ -1,0 +1,223 @@
+---
+title: "Practical Machine Learning - Course Project"
+author: "Dr. Robert Bauer"
+date: "April 10, 2020"
+output: html_document
+---
+
+## Background
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants.
+
+Each participant was asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions:  
+
+*  exactly according to the specification (Class A),   
+*  throwing the elbows to the front (Class B),   
+*  lifting the dumbbell only halfway (Class C),   
+*  lowering the dumbbell only halfway (Class D) and   
+*  throwing the hips to the front (Class E).  
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg).
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz6NA7beuhc
+
+
+## Objective
+
+The goal of this project is to predict the manner in which they did the exercise, represented by the "classe" variable in the training set. All other variables can be used as prediction variables.   
+
+This report describes the set up and cross validation of the modelling, quantifies the expected out of sample error. Finally, the model is being used to predict 20 different test cases.
+
+
+## Getting started
+First we need to load the required packages and get the training and test data.
+
+```{r collapse=TRUE}
+rm(list = ls())
+library(caret)
+
+# load data
+train_file <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+training <- read.csv(train_file)
+
+test_file <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+testing <- read.csv(test_file)
+
+```
+
+## Preparing the data
+As a first checkup, we need to verify that both data frames have the same variables. 
+```{r collapse=TRUE}
+dim(training)
+dim(testing)
+```
+
+It appears that this is quite a long list of column names (variables). Let's check it with some R-code:
+```{r collapse=TRUE}
+all(names(training) %in% names(testing))
+names(training)[which(!(names(training) %in% names(testing)))]
+```
+classe-variable is the only missing variable in the testing dataframe.  
+Now let's check on the training data frame:
+
+```{r collapse=TRUE}
+all(names(testing) %in% names(training))
+names(testing)[which(!(names(testing) %in% names(training)))]
+```
+problem-id is the only missing variable in the training dataframe
+```{r}
+testing[['problem_id']]
+```
+While we obviously need to keep the classe-column in the training dataset as our response-variable, we can delete the problem_id-variable from the testing data set, since it's just returning the row lines.
+```{r}
+testing[['problem_id']] <- c()
+```
+
+
+randomly split the full training data (training) into a smaller training set (Train_Set) and a cross validation set (Val_Set):
+```{r}
+inTrain  <- createDataPartition(training$classe, p=0.7, list=FALSE)
+Train_Set <- training[inTrain, ]
+Val_Set  <- training[-inTrain, ]
+```
+
+drop variables that are mostly NA or have low variance
+```{r}
+NA_variables    <- which(sapply(Train_Set, function(x) length(which(is.na(x)))/length(x)) > 0.95)
+near0_variables <- nearZeroVar(Train_Set)
+
+dropvars  <- unique(c(NA_variables, near0_variables))
+Train_Set <- Train_Set[, -dropvars]
+Val_Set  <- Val_Set[, -dropvars]
+```
+
+check for colinear variables
+```{r}
+library(data.table)
+cor_matrix <- cor(Train_Set[sapply(Train_Set, is.numeric)])
+ctable <- data.table::melt(cor_matrix)
+qplot(x=Var1, y=Var2, data=ctable, fill=value, geom="tile") +
+   scale_fill_gradient2(limits=c(-1, 1)) +
+    theme(axis.text.x = element_text(angle=-90, vjust=0.5, hjust=0))
+```
+Search through the correlation matrix and return the columns to remove to reduce pair-wise correlations.
+```{r}
+colinvars <-findCorrelation(cor_matrix, cutoff = .90)
+Train_Set <- Train_Set[, -colinvars]
+Val_Set  <- Val_Set[, -colinvars]
+```
+
+Subsample Training Set to work with (to speed up the modelling)
+```{r}
+TSet <- Train_Set[sample(1:nrow(Train_Set),size = 1500,replace = F),]
+```
+
+
+This leaves the following models for fitting:
+```{r}
+names(TSet)[names(TSet) != "classe"]
+```
+***
+
+## Model building
+Set the seed to 2616 and predict "classe" with all the other variables using the following three models:
+
+1.  a random forest decision trees ("rf"),
+2.  decision trees with CART (rpart),
+3.  gradient boosting trees ("gbm") and 
+4.  linear discriminant analysis ("lda") model.  
+
+### random forest descision trees
+Let's start training and predicting with the random forest decision trees:
+```{r}
+set.seed(2616)
+
+trControl <- trainControl(method="cv", number=5) # include cross validation as train control method.
+
+modFit_rf <- train(classe ~ .,method="rf", data=TSet, trControl=trControl,verbose=FALSE) #, ntree=100)
+cfm_rf <- confusionMatrix(Val_Set$classe, predict(modFit_rf, newdata = Val_Set))
+print(cfm_rf)
+
+```
+
+
+## decision trees with CART (rpart)
+```{r}
+set.seed(2616)
+
+trControl <- trainControl(method="cv", number=5) # include cross validation as train control method.
+
+modFit_rpart <- train(classe ~ .,method="rpart", data=TSet, trControl=trControl) 
+cfm_rpart <- confusionMatrix(Val_Set$classe, predict(modFit_rpart, newdata = Val_Set))
+print(cfm_rpart)
+```
+
+optional:
+```{r}
+library(rattle)
+fancyRpartPlot(modFit_rpart$finalModel)
+```
+## gradient boosting trees ("gbm")
+```{r}
+set.seed(2616)
+
+trControl <- trainControl(method="cv", number=5) # include cross validation as train control method.
+
+modFit_gbm <- train(classe ~ .,method="gbm", data=TSet, trControl=trControl, verbose=FALSE)
+cfm_gbm <- confusionMatrix(Val_Set$classe, predict(modFit_gbm, newdata = Val_Set))
+print(cfm_gbm)
+```
+
+## linear discriminant analysis ("lda")
+```{r, message=FALSE}
+trControl <- trainControl(method="cv", number=5) # include cross validation as train control method.
+
+modFit_lda <- train(classe~., method = 'sparseLDA',data=TSet, trControl=trControl, verbose=F)
+cfm_lda <- confusionMatrix(Val_Set$classe, predict(modFit_lda, newdata = Val_Set))
+print(cfm_lda)
+```
+
+
+
+
+Get accuracy estimates from the confusion matrices of each model:
+```{r}
+models <- c("modFit_rf","modFit_rpart", "modFit_gbm","modFit_lda")
+n <- length(models)
+accuracy <- rep(NA,n)
+
+for(i in 1:n){
+  cfm <- get(paste0("cfm_",gsub("modFit_","",models[i])))
+  accuracy[i] <- cfm$overall[1]
+}
+
+comp <- data.frame(model=gsub("modFit_","",models),accuracy)
+print(comp)
+```
+Our test reveals that the random forest and gbm models are clearly performing best, with only slight differences between them.
+
+## Variable importance
+Let's check for the five most important variables in the rf and gbm models and their relative importance values:
+```{r}
+
+## random forest
+vi <- varImp(modFit_rf)$importance
+vi[head(order(unlist(vi), decreasing = TRUE), 5L), , drop = FALSE]
+
+## gbm
+library(gbm)
+vi <- varImp(modFit_gbm)$importance
+vi[head(order(unlist(vi), decreasing = TRUE), 5L), , drop = FALSE]
+```
+Both models apparently rely mainly on the X-variable.
+
+# Predicting testing data
+```{r collapse=TRUE}
+predicted_classe_rf <- predict(modFit_rf, newdata = testing)
+cat("model preidction by the random forest model\n")
+print(predicted_classe_rf)
+  
+predicted_classe_gbm <- predict(modFit_gbm, newdata = testing)
+cat("model preidction by the gbm model\n")
+print(predicted_classe_gbm)
+```
+Both models also predict the same classe-values on the testing variable.
